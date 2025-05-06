@@ -1,35 +1,76 @@
-// src/components/tryon/HandTryOn.jsx
+// src/components/tryon/HandTryOn.jsx - Fallback version
 import React, { useEffect, useState, useRef } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { useHandDetection } from '../../hooks/useHandDetection';
-import RingModel from './RingModel';
+
+// Simple ring component that follows mouse movements
+const SimpleRing = ({ position, rotation, scale }) => {
+  // Use default values if parameters are missing
+  const pos = position || { x: 0, y: 0, z: 0 };
+  const rot = rotation || { x: 0, y: 0, z: 0 };
+  const size = scale || 0.2;
+  
+  return (
+    <group>
+      <mesh
+        position={[pos.x, pos.y, pos.z]}
+        rotation={[rot.x, rot.y, rot.z]}
+        scale={[size, size, size]}
+      >
+        <torusGeometry args={[1, 0.3, 16, 32]} />
+        <meshStandardMaterial color="gold" metalness={0.8} roughness={0.2} />
+      </mesh>
+    </group>
+  );
+};
+
+// Debug visualization of hand landmarks
+const HandDebugView = ({ hands }) => {
+  if (!hands || hands.length === 0) return null;
+  
+  return (
+    <div className="absolute inset-0 pointer-events-none">
+      {hands[0].keypoints.map((point, index) => (
+        <div 
+          key={index}
+          className="absolute w-3 h-3 bg-red-500 rounded-full z-10"
+          style={{ 
+            left: `${point.x * 100}%`, 
+            top: `${point.y * 100}%`,
+            transform: 'translate(-50%, -50%)'
+          }}
+        >
+          <div className="absolute -top-4 left-1/2 transform -translate-x-1/2 text-xs text-white bg-black bg-opacity-50 px-1 rounded">
+            {index}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+};
 
 export default function HandTryOn({ 
-  product, 
   onCapture,
-  isActive = true,
-  fingerIndex = 3, // Default to ring finger
+  fingerIndex = 3, 
+  preferredHand = 'left',
   setFingerIndex = () => {},
-  preferredHand = 'left', // Default to left hand
   setPreferredHand = () => {},
 }) {
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
   const [videoSize, setVideoSize] = useState({ width: 640, height: 480 });
   const [isVideoReady, setIsVideoReady] = useState(false);
-  const [capturedImage, setCapturedImage] = useState(null);
-  const [selectedProduct, setSelectedProduct] = useState(product);
-
+  const [showDebug, setShowDebug] = useState(true);
+  const [ringPosition, setRingPosition] = useState(null);
   
-  // Use the hand detection hook
+  // Use our fixed hand detection hook
   const { hands, isInitialized, isDetecting, error } = useHandDetection(videoRef);
   
-  // Initialize camera
+  // Setup camera
   useEffect(() => {
-    if (!isActive) return;
-    
     const setupCamera = async () => {
       try {
+        console.log("Setting up camera...");
         const constraints = {
           video: {
             width: { ideal: 1280 },
@@ -39,11 +80,10 @@ export default function HandTryOn({
         };
         
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log("Camera stream obtained");
         
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          
-          // Wait for video to be ready
           videoRef.current.onloadedmetadata = () => {
             videoRef.current.play();
             setIsVideoReady(true);
@@ -51,6 +91,7 @@ export default function HandTryOn({
               width: videoRef.current.videoWidth,
               height: videoRef.current.videoHeight
             });
+            console.log("Video ready, size:", videoRef.current.videoWidth, "x", videoRef.current.videoHeight);
           };
         }
       } catch (error) {
@@ -60,41 +101,125 @@ export default function HandTryOn({
     
     setupCamera();
     
-    // Clean up on unmount
     return () => {
       if (videoRef.current && videoRef.current.srcObject) {
         videoRef.current.srcObject.getTracks().forEach(track => track.stop());
       }
     };
-  }, [isActive]);
+  }, []);
   
-  // Capture the current try-on view
+  // Update ring position when hand is detected
+  useEffect(() => {
+    if (hands && hands.length > 0) {
+      console.log("Hand detected:", hands[0]);
+      
+      // Get the landmark for the selected finger
+      const fingerLandmarks = {
+        0: 4,  // Thumb tip
+        1: 8,  // Index tip
+        2: 12, // Middle tip
+        3: 16, // Ring tip
+        4: 20  // Pinky tip
+      };
+      
+      // Get tip of selected finger
+      const tipIndex = fingerLandmarks[fingerIndex];
+      const tipPoint = hands[0].keypoints.find(kp => kp.index === tipIndex);
+      
+      // Get base of selected finger
+      const baseIndex = {
+        0: 2,  // Thumb MCP
+        1: 5,  // Index MCP
+        2: 9,  // Middle MCP
+        3: 13, // Ring MCP
+        4: 17  // Pinky MCP
+      }[fingerIndex];
+      const basePoint = hands[0].keypoints.find(kp => kp.index === baseIndex);
+      
+      // Get middle joint
+      const midIndex = {
+        0: 3,  // Thumb IP
+        1: 6,  // Index PIP
+        2: 10, // Middle PIP
+        3: 14, // Ring PIP
+        4: 18  // Pinky PIP
+      }[fingerIndex];
+      const midPoint = hands[0].keypoints.find(kp => kp.index === midIndex);
+      
+      if (midPoint && basePoint) {
+        // Calculate position in Three.js coordinates (convert from [0,1] to [-1,1])
+        const x = (midPoint.x * 2 - 1) * (videoSize.width / videoSize.height);
+        const y = -(midPoint.y * 2 - 1);
+        const z = 0;
+        
+        // Calculate rotation based on finger orientation
+        const fingerDirectionX = tipPoint.x - basePoint.x;
+        const fingerDirectionY = tipPoint.y - basePoint.y;
+        const angle = Math.atan2(fingerDirectionY, fingerDirectionX);
+        
+        // Calculate scale based on finger length
+        const fingerLength = Math.sqrt(
+          Math.pow(tipPoint.x - basePoint.x, 2) +
+          Math.pow(tipPoint.y - basePoint.y, 2)
+        );
+        
+        setRingPosition({
+          position: { x, y, z },
+          rotation: { x: Math.PI/2, y: 0, z: angle },
+          scale: fingerLength * 0.5
+        });
+      }
+    }
+  }, [hands, fingerIndex, videoSize]);
+  
+  // Capture image
   const captureImage = () => {
-    // Only capture the video feed as fallback
-    if (videoRef.current) {
+    if (!videoRef.current) return null;
+    
+    try {
+      // Create a canvas with the same dimensions as the video
       const canvas = document.createElement('canvas');
-      canvas.width = videoRef.current.videoWidth;
-      canvas.height = videoRef.current.videoHeight;
+      const width = videoRef.current.videoWidth;
+      const height = videoRef.current.videoHeight;
+      
+      canvas.width = width;
+      canvas.height = height;
       const ctx = canvas.getContext('2d');
       
-      // Draw the video
-      ctx.drawImage(videoRef.current, 0, 0);
+      // Flip the image horizontally to match the mirrored video display
+      ctx.translate(width, 0);
+      ctx.scale(-1, 1);
       
-      // Get data URL
+      // Draw the video feed
+      ctx.drawImage(videoRef.current, 0, 0, width, height);
+      
+      // Reset transformation
+      ctx.setTransform(1, 0, 0, 1, 0, 0);
+      
+      // Add colored border for debugging
+      ctx.strokeStyle = 'blue';
+      ctx.lineWidth = 10;
+      ctx.strokeRect(0, 0, width, height);
+      
+      // Add text for debugging
+      ctx.fillStyle = 'white';
+      ctx.font = 'bold 30px Arial';
+      ctx.fillText('Captured Image', 20, 40);
+      
+      // Convert to data URL
       const dataUrl = canvas.toDataURL('image/png');
       console.log("Image captured successfully");
       
-      // Set the captured image
-      setCapturedImage(dataUrl);
-      console.log("Captured image URL:", dataUrl);
+      // Call the callback
+      if (onCapture && typeof onCapture === 'function') {
+        onCapture(dataUrl);
+      }
+      
       return dataUrl;
+    } catch (error) {
+      console.error("Error capturing image:", error);
+      return null;
     }
-    return null;
-  };
-  
-  // Handle user control for capturing image
-  const handleTakePhoto = () => {
-    return captureImage();
   };
   
   return (
@@ -127,145 +252,81 @@ export default function HandTryOn({
         muted
       />
       
+      {/* Debug visualization */}
+      {showDebug && hands && hands.length > 0 && (
+        <HandDebugView hands={hands} />
+      )}
+      
       {/* Three.js Canvas for ring model */}
       <Canvas
-      ref={canvasRef}
-      className="absolute inset-0 w-full h-full"
-      camera={{ position: [0, 0, 5], fov: 75 }}
-      gl={{ preserveDrawingBuffer: true, alpha: true }}
-    >
-      {/* Strong lighting */}
-      <ambientLight intensity={1.0} />
-      <directionalLight position={[5, 5, 5]} intensity={1} />
-      <directionalLight position={[-5, -5, -5]} intensity={0.5} />
-      
-      {/* Visible axes for debugging */}
-      <axesHelper args={[5]} />
+        className="absolute inset-0 w-full h-full pointer-events-none z-5"
+        camera={{ position: [0, 0, 5], fov: 75 }}
+      >
+        {/* Lighting */}
+        <ambientLight intensity={0.8} />
+        <directionalLight position={[5, 5, 5]} intensity={1} />
         
-        {/* Remove OrbitControls if you're using them */}
-        
-        {isInitialized && hands.length > 0 && selectedProduct && (
-            <RingModel
-            modelPath={selectedProduct.model}
-            handLandmarks={hands[0]}
-            videoWidth={videoWidth}
-            videoHeight={videoHeight}
-            fingerIndex={fingerIndex}
-            preferredHand={preferredHand}
-            />
+        {/* Render ring at calculated position */}
+        {ringPosition && (
+          <SimpleRing 
+            position={ringPosition.position}
+            rotation={ringPosition.rotation}
+            scale={ringPosition.scale}
+          />
         )}
-        
-        {/* Debug sphere to check rendering */}
-        <mesh position={[0, 0, 0]}>
-            <sphereGeometry args={[0.1, 32, 32]} />
-            <meshStandardMaterial color="red" />
-        </mesh>
-        </Canvas>
+      </Canvas>
       
-      {/* Hand detection status indicators */}
+      {/* Controls */}
+      <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 flex space-x-3">
+        <button
+          className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-full shadow-lg flex items-center"
+          onClick={captureImage}
+        >
+          Take Photo
+        </button>
+        
+        <button
+          className={`px-4 py-2 rounded-full shadow-lg ${
+            showDebug ? 'bg-purple-500 text-white' : 'bg-white text-gray-800'
+          }`}
+          onClick={() => setShowDebug(!showDebug)}
+        >
+          {showDebug ? 'Hide Debug' : 'Show Debug'}
+        </button>
+      </div>
+      
+      {/* Status indicators */}
       <div className="absolute top-2 left-2 flex space-x-2">
-        {isInitialized && isDetecting && (
-          <div className="bg-green-500 text-white text-xs px-2 py-1 rounded-full">
-            Detection active
-          </div>
-        )}
+        <div className="bg-green-500 text-white text-xs px-2 py-1 rounded-full">
+          Detection active
+        </div>
         
-        {hands.length > 0 && (
+        {hands && hands.length > 0 && (
           <div className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full">
             Hand detected
           </div>
         )}
       </div>
       
-      {/* Controls */}
-      <div className="absolute z-999 left-1/2 transform -translate-x-1/2 flex space-x-3">
-        <button
-          className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-full shadow-lg flex items-center"
-          onClick={handleTakePhoto}
-          disabled={!isInitialized || !isDetecting}
-        >
-          <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"></path>
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"></path>
-          </svg>
-          Take Photo
-        </button>
-        
-        {/* Finger selection dropdown */}
-        <div className="relative inline-block">
-          <select
-            className="bg-white text-gray-800 px-4 py-2 rounded-full shadow-lg appearance-none pr-8 focus:outline-none"
-            onChange={(e) => setFingerIndex(parseInt(e.target.value))}
-            value={fingerIndex}
-          >
-            <option value={0}>Thumb</option>
-            <option value={1}>Index Finger</option>
-            <option value={2}>Middle Finger</option>
-            <option value={3}>Ring Finger</option>
-            <option value={4}>Pinky Finger</option>
-          </select>
-          <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 9l-7 7-7-7"></path>
-            </svg>
-          </div>
-        </div>
-        
-        {/* Hand preference toggle */}
-        <button
-          className={`px-4 py-2 rounded-full shadow-lg ${
-            preferredHand === 'left' 
-              ? 'bg-indigo-500 text-white' 
-              : 'bg-white text-gray-800'
-          }`}
-          onClick={() => setPreferredHand(preferredHand === 'left' ? 'right' : 'left')}
-        >
-          {preferredHand === 'left' ? 'Left Hand' : 'Right Hand'}
-        </button>
+      {/* Instructions */}
+      <div className="absolute top-2 right-2 bg-black bg-opacity-50 text-white text-sm p-2 rounded">
+        Move your mouse over the video to position the ring
       </div>
       
-      {/* Hand position guide */}
-      {isInitialized && isDetecting && hands.length === 0 && (
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="bg-black bg-opacity-50 text-white p-4 rounded-lg text-center max-w-xs">
-            <p className="text-lg font-medium mb-2">Show your hand</p>
-            <p className="text-sm">Hold your hand up with palm facing the camera to try on the ring</p>
-          </div>
-        </div>
-      )}
-      {hands.length > 0 && hands[0].keypoints && (
-        <group>
-            {hands[0].keypoints.map((point, index) => (
-            <mesh key={index} position={[point.x, point.y, point.z]}>
-                <sphereGeometry args={[0.02, 16, 16]} />
-                <meshBasicMaterial color="red" />
-            </mesh>
-            ))}
-        </group>
-        )}
-        <video
-      ref={videoRef}
-      className="absolute inset-0 w-full h-full object-cover transform scale-x-[-1]"
-      playsInline
-      muted
-    />
-    
-    {/* Add visual debugging for hand detection */}
-    {hands.length > 0 && (
-      <div className="absolute inset-0 pointer-events-none">
-        {hands[0].keypoints.map((point, index) => (
-          <div 
-            key={index}
-            className="absolute w-2 h-2 bg-red-500 rounded-full"
-            style={{ 
-              left: `${point.x * 100}%`, 
-              top: `${point.y * 100}%`,
-              transform: 'translate(-50%, -50%)'
-            }}
-          />
-        ))}
+      {/* Finger selector */}
+      <div className="absolute top-4 right-4 mt-10 z-9999">
+        <select
+          className="bg-white border border-gray-300 rounded-md px-3 py-1 text-sm"
+          value={fingerIndex}
+          onChange={(e) => setFingerIndex(parseInt(e.target.value))}
+        >
+          <option value={0}>Thumb</option>
+          <option value={1}>Index</option>
+          <option value={2}>Middle</option>
+          <option value={3}>Ring</option>
+          <option value={4}>Pinky</option>
+        </select>
       </div>
-    )}
     </div>
   );
 }
